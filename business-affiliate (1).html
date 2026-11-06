@@ -1,0 +1,74 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Floot Business — Affiliate</title>
+<style>
+body{font-family:system-ui;background:#7C3AED;margin:0;padding:16px} .card{max-width:420px;margin:auto;background:#fff;border-radius:22px;padding:20px}
+input,button{width:100%;padding:13px;margin:6px 0;border-radius:12px;border:1px solid #ddd;box-sizing:border-box}
+button{background:#7C3AED;color:#fff;border:0;font-weight:800;cursor:pointer} .pill{display:inline-block;background:#EDE9FE;color:#5B21B6;padding:6px 10px;border-radius:999px;font-weight:800;font-size:12px}
+.stat{background:#F5F3FF;border-radius:14px;padding:12px;margin:8px 0} .ok{color:green}.err{color:red} .muted{color:#666;font-size:13px}
+</style></head>
+<body><div class="card" id="app"><h2>FLOOT NG — Business</h2><p class="muted">Affiliate account of ride.floot.com.ng<br>Same login. Same wallet. Same email. No second account.</p><div id="content">Loading...</div></div>
+<script>
+// === CONFIG: USE YOUR EXISTING RIDE API — DO NOT CREATE A NEW ONE ===
+const RIDE_API_BASE = 'https://api.floot.com.ng'; // your EXISTING ride API
+const RIDE_LOGIN_URL = 'https://ride.floot.com.ng'; // where login already lives
+
+// 1. Try to reuse Ride session: same token key as Ride app uses
+function getToken(){ return localStorage.getItem('floot_token') || localStorage.getItem('token') || sessionStorage.getItem('floot_token'); }
+function getUser(){ try{ return JSON.parse(localStorage.getItem('floot_user')||'null'); }catch{ return null; } }
+
+async function init(){
+  const el = document.getElementById('content');
+  let user = getUser();
+  let token = getToken();
+
+  // 2. If no token, DON'T show a new signup. Send to Ride login, then back here.
+  if(!token){
+    el.innerHTML = `<p>You need a Ride account first — Business is an affiliate of Ride.</p>
+    <button onclick="location.href='${RIDE_LOGIN_URL}?next='+encodeURIComponent(location.href)">Login with Ride Account</button>
+    <p class="muted">No Ride account yet? You will sign up ONCE on Ride, then come back here as a Business Affiliate. No second password.</p>`;
+    return;
+  }
+
+  // 3. Verify token against EXISTING Ride API /me — no new endpoint needed
+  try{
+    const r = await fetch(RIDE_API_BASE + '/api/auth/me', { headers:{ Authorization:'Bearer '+token }});
+    const d = await r.json();
+    if(!r.ok) throw new Error(d.error||'Session expired');
+    user = d.user || user;
+  }catch(e){
+    // Token invalid on Ride = invalid here too. That's correct — ONE session.
+    el.innerHTML = `<p class="err">Session expired on Ride. Please login again on Ride.</p><button onclick="location.href='${RIDE_LOGIN_URL}?next='+encodeURIComponent(location.href)">Login on Ride</button>`;
+    return;
+  }
+
+  // 4. Affiliate identity = EXISTING Floot ID. No new ID, no new table.
+  const affiliateCode = user.floot_id || user.email;
+  const affiliateLink = 'https://ride.floot.com.ng/?ref=' + encodeURIComponent(affiliateCode);
+
+  // 5. Commission: 3% of delivery fee, calculated from EXISTING orders.
+  // If your Ride API already has /api/orders?affiliate=..., use it. Fallback: show how to calculate.
+  let orders = [];
+  try{
+    const ro = await fetch(RIDE_API_BASE + '/api/orders?affiliate=' + encodeURIComponent(affiliateCode), { headers:{ Authorization:'Bearer '+token }});
+    if(ro.ok){ const od = await ro.json(); orders = od.orders || od || []; }
+  }catch{}
+
+  // Demo fallback numbers ONLY if API has no affiliate filter yet — replace with real orders above.
+  // Commission math stays the same: delivery_fee * 0.03
+  const totalFees = orders.reduce((s,o)=> s + Number(o.delivery_fee||o.fee||0), 0);
+  const commission = totalFees * 0.03;
+
+  el.innerHTML = `
+    <span class="pill">AFFILIATE • LINKED TO RIDE</span>
+    <h3 style="margin:12px 0 4px">Hello, ${user.business_name || user.full_name || user.email}</h3>
+    <p class="muted">Logged in as <b>${user.email}</b><br>Floot ID / Affiliate Code: <b>${affiliateCode}</b><br>Wallet: Same as Ride — same email = same wallet</p>
+    <div class="stat"><b>Your Affiliate Link</b><br><small>${affiliateLink}</small><br><button onclick="navigator.clipboard.writeText('${affiliateLink}');this.textContent='Copied!'">Copy Link</button></div>
+    <div class="stat"><b>Commission: 3% of Delivery Fee</b><br>Total delivery fees via you: ₦${totalFees.toLocaleString()}<br><b>You earned: ₦${commission.toLocaleString()}</b><br><span class="muted">Floot charges 10% • You keep 3% • Paid month-end • Min payout ₦10,000</span></div>
+    <div class="stat"><b>Soft Loan</b><br><span class="muted">Based on your Ride volume. No new application — your Ride history IS your credit history.</span></div>
+    <button onclick="location.href='${RIDE_LOGIN_URL}'">Open Ride App (Same Login)</button>
+    <p class="muted">If you can login on Ride, you can login here. If you can't login on Ride, you can't login here — because it's the SAME account.</p>
+  `;
+}
+init();
+</script></body></html>
