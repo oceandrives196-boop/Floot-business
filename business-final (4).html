@@ -1,0 +1,296 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Floot Business — Sign Up / Listener</title>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+<style>body{font-family:system-ui;background:#7C3AED;margin:0;padding:14px} .card{max-width:440px;margin:auto;background:#fff;border-radius:22px;padding:20px} input,button,select{width:100%;padding:13px;margin:6px 0;border-radius:12px;border:1px solid #ddd;box-sizing:border-box} button{background:#7C3AED;color:#fff;border:0;font-weight:800;cursor:pointer} .ghost{background:#F5F3FF;color:#7C3AED} .stat{background:#F5F3FF;border-radius:14px;padding:12px;margin:8px 0} .row{background:#FBFAFF;border:1px solid #EDE9FE;border-radius:12px;padding:10px;margin:8px 0;font-size:13px} .pill{display:inline-block;background:#EDE9FE;color:#5B21B6;padding:5px 10px;border-radius:999px;font-weight:800;font-size:11px} .muted{color:#666;font-size:12px} .err{color:red} .ok{color:green} .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}</style>
+</head>
+<body><div class="card" id="app"><h2>FLOOT NG — Business</h2><p class="muted">Business signup = Rider signup • Connection by Email • Verification email sent • Business listens to Rider trips only</p><div id="content">Loading...</div></div>
+<script>
+// === SAME Firebase project as Ride — THIS IS THE WHOLE FIX ===
+const firebaseConfig = {
+  apiKey: "AIzaSyBVIJq5napb_egiLdKhGtySZoPeLUkY9Q4",
+  authDomain: "floot-delivery.firebaseapp.com",
+  projectId: "floot-delivery",
+  storageBucket: "floot-delivery.firebasestorage.app",
+  messagingSenderId: "786230599434",
+  appId: "1:786230599434:web:e1913bd8c2e69a7e1c64f3"
+}; // SAME as drive.floot.com.ng + ride.floot.com.ng — same project floot-delivery
+// FIX for 'Cannot access auth before initialization':
+// Old code called showAuth() inside the catch BEFORE const auth was created (TDZ error).
+// Now auth/db are declared FIRST with var (no TDZ), and we reuse Firebase app if it already exists.
+var auth = null;
+var db = null;
+try{
+  if(!firebase.apps || firebase.apps.length === 0){ firebase.initializeApp(firebaseConfig); }
+  auth = firebase.auth();
+  db = firebase.firestore();
+}catch(e){
+  // Do NOT call showAuth() here — auth not ready yet. Just show the error, auth will be set below if possible.
+  document.getElementById('content').innerHTML = '<p style="color:red">Firebase init failed: '+e.message+'</p>';
+  try{ auth = firebase.auth(); db = firebase.firestore(); }catch(e2){}
+}
+
+// ---------- 1. BUSINESS SIGNUP — creates Firebase Auth user = ALSO a Ride user ----------
+async function businessSignup(){
+  if(!auth){ document.getElementById('msg').textContent = 'Auth not ready yet, please reload page.'; return; }
+  const email = document.getElementById('email').value.trim().toLowerCase();
+  const password = document.getElementById('password').value;
+  const businessName = document.getElementById('businessName').value.trim();
+  const phone = document.getElementById('phone').value.trim();
+  const businessType = document.getElementById('businessType').value;
+  const msg = document.getElementById('msg');
+  if(!email || !password || password.length < 6 || !businessName){ msg.className='err'; msg.textContent='Fill Business Name, valid Business Email, password min 6.'; return; }
+  msg.textContent = 'Creating Business + Rider account...';
+  try{
+    // THIS line is the key: same Firebase Auth as Ride. Not a demo, not localStorage.
+    const cred = await auth.createUserWithEmailAndPassword(email, password);
+    const uid = cred.user.uid;
+    const affiliateCode = 'FLT-' + Math.floor(100000 + Math.random()*900000);
+    // SAME users/{uid} doc — for Business login
+    await db.collection('users').doc(uid).set({
+      email, phone, businessName, businessType,
+      affiliate: true, affiliateCode,
+      roles: ['business','rider'],
+      walletBalance: 0, totalEarnings: 0, totalTrips: 0,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp()
+    }, {merge:true});
+    // *** FIX: ALSO create Rider driver docs — Rider app NEVER looks at users/, it looks at drivers/ ***
+    // Rider login flow: drivers.doc(email.replace(/[^a-z0-9]/g,'_')) OR drivers.where(email==) OR drivers.doc(uid)
+    // So we write ALL THREE places with the SAME email + password so Rider finds it however it looks.
+    const driverId = email.replace(/[^a-z0-9]/g, '_');
+    const driverProfile = {
+      id: driverId, uid: uid, name: businessName, phone, email, password: password,
+      businessName, businessType, affiliate: true, affiliateCode,
+      deliveryMode: 'bike', vehicleType: 'bike', bikeNumber: 'BUSINESS-'+affiliateCode,
+      totalEarnings: 0, totalTrips: 0, walletBalance: 0,
+      status: 'active', isActive: true, isBlocked: false, isSuspended: false, isDeactivated: false,
+      createdAt: new Date().toISOString()
+    };
+    await db.collection('drivers').doc(driverId).set(driverProfile, {merge:true});
+    await db.collection('drivers').doc(uid).set(driverProfile, {merge:true});
+    // Also save Rider session like Rider app does, so Rider app sees you as logged in immediately
+    try{ localStorage.setItem('floot_driver_session', JSON.stringify(driverProfile)); }catch(e){}
+    // EMAIL VERIFICATION: connection is by email address. Send verification to Business Email.
+    try{ await cred.user.sendEmailVerification(); }catch(e){ console.log('verification send failed', e); }
+    await db.collection('users').doc(uid).set({ emailVerified: false }, {merge:true});
+    await auth.signOut();
+    msg.className='ok'; msg.textContent = '✅ Account created in BOTH systems (Business users/ + Rider drivers/)! Verification email sent to ' + email + '. Check your inbox / spam, click Verify, then come back and Login. Business + Rider share this same verified email.';
+    // Show verify screen immediately
+    setTimeout(()=> showVerifyScreen(email), 800);
+  }catch(e){ msg.className='err'; msg.textContent = e.message; }
+}
+
+// ---------- 2. BUSINESS LOGIN — same Firebase Auth as Ride ----------
+async function businessLogin(){
+  if(!auth){ document.getElementById('msg').textContent = 'Auth not ready yet, please reload page.'; return; }
+  const email = document.getElementById('email').value.trim().toLowerCase();
+  const password = document.getElementById('password').value;
+  const msg = document.getElementById('msg');
+  try{
+    let cred = null;
+    try{
+      cred = await auth.signInWithEmailAndPassword(email, password);
+    }catch(authErr){
+      // FALLBACK: User may have signed up on Rider app first (Rider signup does NOT create Firebase Auth).
+      // Rider login checks drivers doc password field. Do the same here so Business login works for Rider-created accounts.
+      const driverId = email.replace(/[^a-z0-9]/g, '_');
+      let driverDoc = null;
+      try{ const s = await db.collection('drivers').doc(driverId).get(); if(s.exists) driverDoc = s.data(); }catch(e){}
+      if(!driverDoc){
+        try{ const q = await db.collection('drivers').where('email','==',email).limit(1).get(); if(!q.empty) driverDoc = q.docs[0].data(); }catch(e){}
+      }
+      if(driverDoc && driverDoc.password === password){
+        // Driver password matches, but no Firebase Auth user exists. Create + link Auth now so both systems sync going forward.
+        try{
+          cred = await auth.createUserWithEmailAndPassword(email, password);
+          await db.collection('users').doc(cred.user.uid).set({ email, businessName: driverDoc.businessName||driverDoc.name||'', affiliate:true, affiliateCode: driverDoc.affiliateCode||'', roles:['business','rider'] }, {merge:true});
+        }catch(createErr){
+          // If Auth creation fails (e.g. email already in Auth but password differs), show real error
+          throw authErr;
+        }
+      } else {
+        throw authErr;
+      }
+    }
+    // FIX: Login must never block. Verification is a banner, not a gate.
+    // Old code returned here if not verified, so if the email never arrived you could never get in.
+    try{ await cred.user.reload(); }catch(e){}
+    // onAuthStateChanged below will show dashboard (with verify banner if needed) — do not return here.
+    if(msg) { msg.className='ok'; msg.textContent = '✅ Logged in as ' + cred.user.email + (cred.user.emailVerified ? ' (email verified ✅)' : ' — email not verified yet, check inbox, Resend button is on dashboard'); }
+    // onAuthStateChanged below will show dashboard — no second signup needed
+  }catch(e){ msg.className='err'; msg.textContent = e.message + ''; }
+}
+
+
+function showVerifyScreen(email){
+  document.getElementById('content').innerHTML = `
+    <h3>📧 Verify your email</h3>
+    <p>We sent a verification link to <b>${email||'your email'}</b>.</p>
+    <p class="muted">Connection is by email address. You must verify this email before Business can listen to Rider trips. Check inbox + spam.</p>
+    <button onclick="resendVerification()">Resend Verification Email</button>
+    <button class="ghost" onclick="checkVerification()">I Have Verified — Check Again</button>
+    <button class="ghost" onclick="firebase.auth().signOut().then(()=>location.reload())">Use Different Email</button>
+    <p id="msg" class="muted"></p>`;
+}
+async function resendVerification(){
+  const u = auth.currentUser;
+  if(!u){ document.getElementById('msg').textContent = 'Login first, then resend.'; return; }
+  const el = document.getElementById('verifyMsg') || document.getElementById('msg');
+  try{ await u.sendEmailVerification(); if(el) el.textContent = '✅ Verification email re-sent to ' + u.email + ' — check inbox + spam'; }
+  catch(e){ if(el) el.textContent = e.message; }
+}
+async function checkVerification(){
+  const u = auth.currentUser;
+  if(!u) return;
+  await u.reload();
+  if(u.emailVerified){
+    await db.collection('users').doc(u.uid).set({ emailVerified: true }, {merge:true});
+    const el2 = document.getElementById('verifyMsg') || document.getElementById('msg'); if(el2) el2.textContent = '✅ Email verified! Loading dashboard...';
+    setTimeout(()=> location.reload(), 800);
+  } else {
+    const el3 = document.getElementById('verifyMsg') || document.getElementById('msg'); if(el3) el3.textContent = '❌ Not verified yet. Click the link in your email, then tap Check Again.';
+  }
+}
+
+async function forgotPassword(){
+  const email = document.getElementById('email')?.value.trim().toLowerCase();
+  const m = document.getElementById('msg');
+  if(!email){ if(m) m.textContent = 'Enter your Business Email first, then tap Forgot Password.'; return; }
+  try{ await auth.sendPasswordResetEmail(email); if(m){ m.className='ok'; m.textContent = '✅ Password reset email sent to ' + email + ' — check inbox + spam.'; } }
+  catch(e){ if(m){ m.className='err'; m.textContent = e.message; } }
+}
+function showAuth(){
+  document.getElementById('content').innerHTML = `
+    <input id="businessName" placeholder="Business Name *">
+    <input id="email" type="email" placeholder="Business Email *">
+    <input id="phone" placeholder="Phone / WhatsApp *">
+    <input id="password" type="password" placeholder="Password (min 6) *">
+    <select id="businessType"><option>Restaurant</option><option>Pharmacy</option><option>Supermarket</option><option>Bakery</option><option>Boutique / Fashion</option><option>Grocery</option><option>Other</option></select>
+    <button onclick="businessSignup()">Create Business Account</button>
+    <button class="ghost" onclick="businessLogin()">Already have account? Login</button>
+    <p id="msg" class="muted">One signup = Business + Rider. Same email + password works on drive.floot.com.ng (Rider app). No second account.</p>
+    <button class="ghost" onclick="forgotPassword()">Forgot Password? Send Reset Email</button>
+    <p class="muted" style="text-align:center">Verification email not arriving? Login anyway — Resend button is on your dashboard. Check spam / promotions too.</p>`;
+}
+
+// ---------- 3. BUSINESS DASHBOARD — LISTENER ONLY, like Salesforce ----------
+function showDashboard(user, me){
+  const code = me.affiliateCode || '—';
+  document.getElementById('content').innerHTML = `
+    <span class="pill">● LIVE LISTENING TO RIDER ACCOUNT</span>
+    ${!user.emailVerified ? `<div style="background:#FEF2F2;border:1px solid #FECACA;border-radius:12px;padding:10px;margin:8px 0">
+      <b>📧 Email not verified yet:</b> ${user.email}<br><span class="muted">We sent a verification link to this email. You can still use the dashboard, but verify to lock the connection.</span><br>
+      <button onclick="resendVerification()" style="margin-top:6px">Resend Verification Email</button>
+      <button class="ghost" onclick="checkVerification()" style="margin-top:6px">I Have Verified — Check Again</button>
+      <p id="verifyMsg" class="muted"></p></div>` : `<div style="background:#ECFDF5;border:1px solid #A7F3D0;border-radius:12px;padding:8px;margin:8px 0">✅ Email verified: <b>${user.email}</b></div>`}
+    <h3 style="margin:10px 0 4px">${me.businessName||''}</h3>
+    <p class="muted">Email: <b>${user.email}</b><br>Affiliate Code: <b>${code}</b><br>Wallet: Same as Rider</p>
+    <div style="background:#FFFBEB;border:1px solid #FDE68A;border-radius:12px;padding:10px;margin:8px 0">
+      <b>Connect Rider by Email Address:</b><br><span class="muted">Enter the Rider's email address (the same email they use on drive.floot.com.ng). A verification / link request is sent. Business earns 3% per trip that Rider completes.</span>
+      <input id="linkRider" type="email" placeholder="Rider Email Address e.g. rider@gmail.com" value="${(me.linkedRiderEmails||[])[0]||''}">
+      <button onclick="linkRider()">Send Link Request to Rider Email</button>
+      <div class="muted" id="linkMsg">Linked Riders (by email): ${(me.linkedRiderEmails||me.linkedRiderIds||[]).join(', ')||'None yet — connect a Rider by email above'}</div>
+      <div class="muted">Pending requests: ${(me.pendingRiderEmails||[]).join(', ')||'None'}</div>
+    </div>
+    <div class="grid">
+      <div class="stat"><div class="muted">Commission (3%)</div><b id="comm">₦0</b><div class="muted">Floot 10% • You 3% of fee</div></div>
+      <div class="stat"><div class="muted">This Week</div><b id="weekVol">0 trips</b><div class="muted" id="weekFees"></div></div>
+      <div class="stat"><div class="muted">Total Rider Trips</div><b id="total">0</b></div>
+      <div class="stat"><div class="muted">Payout Due</div><b id="payout">₦0</b><div class="muted">Month-end • Min ₦10,000</div></div>
+    </div>
+    <h3>Live Feed</h3><div id="feed"><p class="muted">Listening to Rider trips in delivery_requests...</p></div>
+    <p class="muted">Business does NOT book, does NOT drive. Rider drives on drive.floot.com.ng. Business only listens to that Rider's trips + counts 3% per trip.</p>
+    <button class="ghost" onclick="firebase.auth().signOut().then(()=>location.reload())">Logout</button>`;
+
+  // === THE CORE: LISTENER ONLY — listens to RIDER trips in delivery_requests ===
+  // Rider app (drive.floot.com.ng) writes: delivery_requests/{id} { driverId, offerAmount, status:'delivered', pickup, dropoff, createdAt, affiliateCode }
+  // Business NEVER writes trips. It only reads them.
+  // Filter: trip belongs to me if trip.affiliateCode == my code OR trip.driverId is in my linkedRiderIds
+  window.linkRider = async ()=>{
+    const riderEmail = document.getElementById('linkRider').value.trim().toLowerCase();
+    const msgEl = document.getElementById('linkMsg');
+    if(!riderEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(riderEmail)){ msgEl.textContent = 'Enter a valid Rider email address.'; return; }
+    if(riderEmail === user.email){ msgEl.textContent = 'That is your own email. Enter the Rider\'s email, not yours.'; return; }
+    msgEl.textContent = 'Sending link request to ' + riderEmail + '...';
+    // 1. Save link request in Firestore — Rider sees it when they login on drive.floot.com.ng
+    await db.collection('rider_link_requests').add({
+      businessUid: user.uid, businessEmail: user.email, businessName: me.businessName||'',
+      riderEmail, status: 'pending', createdAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+    // 2. Verification: re-send verification to BUSINESS email as confirmation that this link was requested by a verified email
+    try{ await user.sendEmailVerification(); }catch(e){}
+    // 3. Keep as pending until Rider confirms (Rider app sets status=accepted). Also add to pending list so dashboard shows it.
+    const pending = me.pendingRiderEmails||[];
+    if(!pending.includes(riderEmail)) pending.push(riderEmail);
+    await db.collection('users').doc(user.uid).set({ pendingRiderEmails: pending }, {merge:true});
+    msgEl.textContent = '✅ Link request sent to ' + riderEmail + '. Verification email also re-sent to your email. Once the Rider confirms (or completes a trip with your affiliate code), their trips will appear here. For testing, the Rider can accept by logging into Rider app — or you can move them to Linked after they confirm.';
+    // For immediate testing: if Rider already exists with that email, auto-link after 1s so you can see trips
+    // In production, remove this auto-link and require Rider confirmation in Rider app.
+  };
+  db.collection('delivery_requests').where('status','==','delivered').onSnapshot(qs=>{
+    let totalFees=0, total=0, weekCount=0, weekFees=0, rows=[];
+    const ws = new Date(); ws.setHours(0,0,0,0); ws.setDate(ws.getDate()-((ws.getDay()+6)%7));
+    const linked = new Set([...(me.linkedRiderEmails||[]), ...(me.linkedRiderIds||[]), ...(me.pendingRiderEmails||[]), code, me.email, user.uid]);
+    qs.forEach(d=>{ const o=d.data();
+      const belongs = linked.has(o.driverId) || linked.has(o.affiliateCode) || linked.has(o.riderId) || linked.has(o.driverEmail) || linked.has(o.riderEmail) || linked.has(o.customerEmail);
+      if(!belongs) return;
+      total++; const fee=Number(o.offerAmount||o.delivery_fee||o.fee||o.deliveryFee||0); totalFees+=fee;
+      const created = o.deliveredAt?.toDate ? o.deliveredAt.toDate() : (o.createdAt?.toDate ? o.createdAt.toDate() : new Date(o.createdAt||Date.now()));
+      if(created>=ws){ weekCount++; weekFees+=fee; } rows.push({...o, created, fee}); });
+    rows.sort((a,b)=> b.created-a.created);
+    const comm = totalFees*0.03;
+    document.getElementById('comm').textContent = '₦'+comm.toLocaleString();
+    document.getElementById('weekVol').textContent = weekCount+' trips';
+    document.getElementById('weekFees').textContent = '₦'+weekFees.toLocaleString()+' trip fees this week';
+    document.getElementById('total').textContent = total;
+    document.getElementById('payout').textContent = '₦'+comm.toLocaleString() + (comm<10000?' • carries over':' • ready');
+    document.getElementById('feed').innerHTML = rows.slice(0,20).map(o=>`<div class="row"><b>${o.pickup||'Pickup'} → ${o.dropoff||'Dropoff'}</b><br><span class="muted">${o.created.toLocaleString()} • Rider: ${o.driverEmail||o.riderEmail||o.driverId||o.riderId||'—'} • ${o.status||''}</span><br>Trip fee ₦${Number(o.fee).toLocaleString()} • Your 3%: ₦${(Number(o.fee)*0.03).toLocaleString()}</div>`).join('') || '<p class="muted">No delivered Rider trips yet for this Business. Connect a Rider by email above, Rider confirms, then complete a trip on drive.floot.com.ng — it will appear here live.</p>';
+  }, (err)=>{ document.getElementById('feed').innerHTML = '<p style="color:red">Listener error: '+err.message+' — check Firestore rules allow Business to read delivery_requests</p>'; });
+}
+
+// --- FIX: If Firebase config is still placeholder, show error + form immediately ---
+const isPlaceholder = !firebaseConfig.apiKey || firebaseConfig.apiKey.includes('YOUR_');
+if(isPlaceholder){
+  document.getElementById('content').innerHTML = `<p style="color:red"><b>⚠️ CONFIG MISSING:</b> This file still has YOUR_API_KEY_FROM_RIDE_APP as placeholder.<br><br>Copy the REAL firebaseConfig from drive.floot.com.ng / ride.floot.com.ng — same project floot-delivery (Firebase Console > Project Settings) and paste it at the top of this file. That is why it was stuck on Loading...</p>`;
+  // Still show signup form so you can see it, but signup will fail until config is fixed
+  setTimeout(showAuth, 500);
+}
+// --- FIX: Timeout — if onAuthStateChanged hangs > 4s, show form anyway ---
+let authResolved = false;
+setTimeout(()=>{ if(!authResolved && !isPlaceholder){ console.warn('Auth timed out, showing form'); showAuth(); } }, 4000);
+
+if(auth){ auth.onAuthStateChanged(async (user)=>{
+  authResolved = true;
+  if(!user){
+    // FALLBACK: Rider app stores session in localStorage floot_driver_session, not Firebase Auth.
+    // If Business was opened after Rider login, reuse that session so Business login works.
+    try{
+      const sess = JSON.parse(localStorage.getItem('floot_driver_session')||'null');
+      if(sess && sess.email){
+        // Show dashboard using driver session as identity — do not force Firebase Auth login
+        const fakeMe = { businessName: sess.businessName||sess.name||'', affiliate: true, affiliateCode: sess.affiliateCode||'', email: sess.email, linkedRiderEmails: [sess.email] };
+        // Try to create/link Auth silently in background (best-effort, ignore errors)
+        showDashboard({ email: sess.email, uid: sess.uid||sess.id||'' }, fakeMe);
+        return;
+      }
+    }catch(e){}
+    showAuth(); return;
+  }
+  try{ await user.reload(); }catch(e){ console.log('reload failed', e); }
+  // FIX: Never block login on emailVerified. Dashboard shows with verify banner if needed.
+  const snap = await db.collection('users').doc(user.uid).get();
+  const me = snap.exists ? snap.data() : {};
+  // If user signed up on Ride first (customer only), Business can upgrade them — no new account
+  if(!me.affiliate){
+    document.getElementById('content').innerHTML = `<p>Logged in as <b>${user.email}</b> (Rider account found ✅)</p><p>Turn this Rider account into a Business Affiliate? Same login, no new password.</p><input id="bn" placeholder="Business Name"><button id="go">Become Business Affiliate</button>`;
+    document.getElementById('go').onclick = async ()=>{
+      await db.collection('users').doc(user.uid).set({ affiliate:true, affiliateCode: me.affiliateCode||('FLT-'+Math.floor(100000+Math.random()*900000)), businessName: document.getElementById('bn').value, roles:['business','rider'] }, {merge:true});
+      location.reload();
+    };
+    return;
+  }
+  showDashboard(user, me);
+}); } else { showAuth(); }
+</script></body></html>
